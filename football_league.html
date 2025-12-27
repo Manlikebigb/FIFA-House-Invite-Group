@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Football League Generator - Admin/Read-Only</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    table { border-collapse: collapse; margin-top: 20px; width: 100%; }
+    th, td { border: 1px solid #333; padding: 6px; text-align: center; }
+    th { background: #eee; }
+    input { width: 40px; }
+    button { margin-top: 10px; margin-right: 10px; }
+    #adminControls { margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+
+<h2>Football League Generator</h2>
+
+<div id="adminControls">
+  <textarea id="teams" rows="6" cols="30" placeholder="Enter teams, one per line"></textarea><br>
+  <button onclick="generateLeague()">Generate League</button>
+  <button onclick="exportToExcel()">Export Excel</button>
+  <button onclick="exportToPDF()">Export PDF</button>
+  <button onclick="copyReadOnlyLink()">Copy Shareable Read-Only Link</button>
+</div>
+
+<h3>Fixtures</h3>
+<div id="fixtures"></div>
+
+<h3>League Table</h3>
+<div id="table"></div>
+
+<script>
+let league = {};
+let fixtures = [];
+
+// Determine if we are in read-only mode based on URL
+const urlParams = new URLSearchParams(window.location.search);
+const isReadOnly = urlParams.get('mode') === 'view';
+
+// Hide admin controls if read-only
+if (isReadOnly) {
+  document.getElementById('adminControls').style.display = 'none';
+}
+
+function generateLeague() {
+  const teams = document.getElementById('teams').value.trim().split("\n");
+  league = {};
+  fixtures = [];
+
+  teams.forEach(team => league[team] = { played:0, won:0, draw:0, lost:0, gf:0, ga:0, gd:0, points:0 });
+
+  // Generate simple round-robin fixtures with automatic matchweeks
+  let week = 1;
+  for(let i=0;i<teams.length;i++){
+    for(let j=i+1;j<teams.length;j++){
+      fixtures.push({ home: teams[i], away: teams[j], hs:0, as:0, week: week });
+      week++;
+      if(week > teams.length-1) week = 1;
+    }
+  }
+
+  renderFixtures();
+  calculateTable();
+}
+
+function renderFixtures() {
+  let html = "<table><tr><th>Week</th><th>Home</th><th>Score</th><th>Away</th></tr>";
+  fixtures.forEach((f, i) => {
+    const readonlyAttr = isReadOnly ? "readonly" : "";
+    html += `<tr>
+      <td>${f.week}</td>
+      <td>${f.home}</td>
+      <td>
+        <input type='number' value='${f.hs}' min='0' onchange='updateScore(${i},"hs",this.value)' ${readonlyAttr}> -
+        <input type='number' value='${f.as}' min='0' onchange='updateScore(${i},"as",this.value)' ${readonlyAttr}>
+      </td>
+      <td>${f.away}</td>
+    </tr>`;
+  });
+  html += "</table>";
+  document.getElementById('fixtures').innerHTML = html;
+}
+
+function updateScore(index, side, value) {
+  if(isReadOnly) return; // prevent editing in read-only mode
+  fixtures[index][side] = parseInt(value);
+  calculateTable();
+}
+
+function calculateTable() {
+  Object.values(league).forEach(t => Object.assign(t, { played:0, won:0, draw:0, lost:0, gf:0, ga:0, gd:0, points:0 }));
+
+  fixtures.forEach(f => {
+    const hs = f.hs, as = f.as;
+    const home = league[f.home], away = league[f.away];
+    home.played++; away.played++;
+    home.gf += hs; home.ga += as;
+    away.gf += as; away.ga += hs;
+
+    if(hs>as){ home.won++; home.points+=3; away.lost++; }
+    else if(as>hs){ away.won++; away.points+=3; home.lost++; }
+    else { home.draw++; away.draw++; home.points++; away.points++; }
+  });
+
+  Object.values(league).forEach(t => t.gd = t.gf - t.ga);
+  renderTable();
+}
+
+function renderTable() {
+  const sorted = Object.entries(league).sort((a,b) => b[1].points - a[1].points || b[1].gd - a[1].gd || b[1].gf - a[1].gf);
+  let html = "<table><tr><th>Team</th><th>P</th><th>W</th><th>D</th><th>L</th><th>GF</th><th>GA</th><th>GD</th><th>Pts</th></tr>";
+  sorted.forEach(([team,t]) => {
+    html += `<tr>
+      <td>${team}</td>
+      <td>${t.played}</td>
+      <td>${t.won}</td>
+      <td>${t.draw}</td>
+      <td>${t.lost}</td>
+      <td>${t.gf}</td>
+      <td>${t.ga}</td>
+      <td>${t.gd}</td>
+      <td>${t.points}</td>
+    </tr>`;
+  });
+  html += "</table>";
+  document.getElementById('table').innerHTML = html;
+}
+
+function exportToExcel() {
+  const wb = XLSX.utils.book_new();
+  
+  // League table
+  const tableData = Object.entries(league).map(([team,t]) => [team,t.played,t.won,t.draw,t.lost,t.gf,t.ga,t.gd,t.points]);
+  tableData.unshift(["Team","P","W","D","L","GF","GA","GD","Pts"]);
+  const ws = XLSX.utils.aoa_to_sheet(tableData);
+  XLSX.utils.book_append_sheet(wb, ws, "League Table");
+
+  // Fixtures with matchweeks
+  const fixtureData = fixtures.map(f => [f.week,f.home,f.hs,f.as,f.away]);
+  fixtureData.unshift(["Week","Home","Home Score","Away Score","Away"]);
+  const wsFixtures = XLSX.utils.aoa_to_sheet(fixtureData);
+  XLSX.utils.book_append_sheet(wb, wsFixtures, "Fixtures");
+
+  XLSX.writeFile(wb,"Football_League.xlsx");
+}
+
+function exportToPDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  doc.setFontSize(14);
+  doc.text("League Table",10,10);
+  let y=15;
+  Object.entries(league).forEach(([team,t])=>{
+    doc.text(`${team} P:${t.played} W:${t.won} D:${t.draw} L:${t.lost} GF:${t.gf} GA:${t.ga} GD:${t.gd} Pts:${t.points}`,10,y);
+    y+=7;
+    if(y>280){ doc.addPage(); y=10; }
+  });
+
+  doc.addPage();
+  doc.text("Fixtures",10,10);
+  y=15;
+  fixtures.forEach(f=>{
+    doc.text(`Week ${f.week}: ${f.home} ${f.hs} - ${f.as} ${f.away}`,10,y);
+    y+=7;
+    if(y>280){ doc.addPage(); y=10; }
+  });
+
+  doc.save("Football_League.pdf");
+}
+
+// ===== Copy shareable read-only link =====
+function copyReadOnlyLink() {
+  const link = window.location.href.split('?')[0] + "?mode=view";
+  navigator.clipboard.writeText(link).then(() => {
+    alert("Read-only link copied to clipboard!");
+  }).catch(() => {
+    alert("Failed to copy link. Please copy manually.");
+  });
+}
+</script>
+
+</body>
+</html>
